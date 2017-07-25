@@ -62,5 +62,5 @@ After detrending and making sure our data is stationary, we needed to determine 
 <br />
 <br /> 
 
-### 4. Forecasting
+## 4. Forecasting
 - Finally, we chose the best model according to the three metrics and forecasted the next 2 year's worth of data, by using `predict`.
