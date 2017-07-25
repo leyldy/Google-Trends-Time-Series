@@ -2,7 +2,8 @@
 title: "STAT153_MT2_Report"
 author: "Jong Ha Lee, Binyi Cai"
 date: "4/18/2017"
-output: 
+output:
+  html_document: default
   pdf_document:
     fig_height: 2.5
 ---
