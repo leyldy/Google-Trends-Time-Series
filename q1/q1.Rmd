@@ -1,0 +1,561 @@
+---
+title: "q1.Rmd"
+author: "Jong Ha Lee"
+date: "4/12/2017"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("~/Desktop/School/STAT153/midterm2")
+library(fpp)
+library(forecast)
+library(smooth)
+```
+
+# 1. Exploratory Data Analysis
+
+We initially plot the data to see what kind of trend it has, and explore what detrending means we need to do to reduce it to stationary - or even better, white - noise.
+```{r}
+data <- read.csv("q1/q1_train.csv", stringsAsFactors = F) #Note it is weekly data
+data["Xt"] <- seq(1:nrow(data))
+plot(data$Xt, data$activity, main = "Initial Plot", type = "l",
+     ylab = "Activity", xlab = "Time")
+```
+
+## Seasonality
+Looks like there is some sort of seasionality going on. Based on plot, let us divide the section to find local maximas.
+
+```{r}
+local_maxes <- sapply(seq(1, nrow(data), by = 50), function(x){
+  if(x + 50 > nrow(data)){
+    return(which.max(data$activity[x:nrow(data)]) + x - 1)
+  }
+  else{
+    return(which.max(data$activity[x:(x+50)]) + x - 1)
+  }
+})
+
+#What's the average indice difference until local max happens again?
+mean(diff(local_maxes))
+```
+
+We see that around per 51.4 time points, there's seasonality. We also note that there are roughly 52 weeks in a year, so there is seasonality on an annual basis.  
+We also note that there is somewhat of an increasing trend from the initial plot. Furthermore, the amplitude seems to get bigger and bigger. Thus, when we try to estimate the mean trend next, we take note of these features, and that variance may increase if we are to simply fit a constant-amplitude frequency domain function.
+
+----
+
+# 2. Transformation and Removing Mean Structure in Data
+
+
+## a) Log, difference trend twice, no difference seasonality with lag = 52
+
+We see greater variability as time series trend increases, so let's try to make it more constant by doing a log transformation.
+```{r}
+data["log.activity"] <- log(2 + data$activity)
+plot(data$log.activity, type = "l", main = "Log+2-Transformed Activity")
+```
+
+Variability seems to have somewhat stabilized. We will continue to use this logged data in other detrending methods, since it stabilizes the variance.
+
+Let's remove the mean trend by differencing the log+2-transformed data twice.
+
+```{r}
+trenddiff.logdata <- diff(data$log.activity)
+acf(diff(trenddiff.logdata), lag.max = 500, 
+    main = "ACF of 2nd-Order Differenced Data")
+```
+
+
+
+##b) Log, Difference Trend, Difference Seasonality by 52
+
+How about a seasonality differencing instead of a simple second-order differencing? We would first remove the mean trend, then difference that mean trend again due to the seasonality we've seen on an annual (52 week) basis.
+
+```{r}
+acf(diff(trenddiff.logdata, lag = 52), lag.max= 500,
+    main = "ACF of Lag-1 Differenced, then Seasonality Lag-52 Differenced Data")
+```
+
+It actually seems like there is still seasonality, and it's more pronounced then before, when we simply second-order differenced the data.
+
+
+
+##c) Log data, Remove Linear Trend, Remove Seasonal Trend
+
+Earlier we saw a slight increasing overall trend. Let's try to remove that by parametric fitting.
+
+```{r}
+param.fit <- loess(log.activity ~ Xt, data = data,
+                   control = loess.control(surface = "direct"),
+                   span = 0.75, degree = 1)
+plot(data$log.activity, type = "l", main = "Parametric Mean-Trend Fitting")
+lines(param.fit$fitted, col = "red")
+
+plot(param.fit$residuals, type = "l",
+     main = "Residuals of Parametric Fitting to Remove Linear Trend")
+```
+
+
+Now we don't really see a increasing trend we saw before. However, we still need to take care of the seasonality. Let us use the Discrete Fourier Transform to see which frequencies are important. We will use these frequencies to remove the seasonal trend seen in the Residuals after fitting the Parametric Trend. We display a periodogram here:
+```{r}
+periodos <- abs(fft(param.fit$residuals)/sqrt(length(param.fit$residuals)))^2
+names(periodos) <- (1:length(periodos) - 1) / length(param.fit$residuals)
+end.periodos <- ceiling(length(periodos) / 2)
+
+plot(as.numeric(names(periodos))[2:end.periodos], periodos[2:end.periodos], 
+     type = "l", main = "Periodogram of Residuals after Parametric Fit",
+     ylab = "Periodogram Value", xlab = "Frequency")
+```
+
+It seems like there is just one period that's very important, with 2 small others. Let's fit sinusoid functions based on these frequencies to the residuals after parametric fit via a regression method. Red line indicates the fitted values.
+```{r}
+#Top three frequencies; note need to -1 because going from 1->n, change to 0->n-1
+#Also we only go through only half of the frequencies, because the other half is simply the conjugate pair and does not have any effect.
+#Also don't look at frequency = 0, because that is not helpful
+
+coeffs <- sort(periodos[2:end.periodos], decreasing = T)[1:3]
+freqs <- as.numeric(names(coeffs))
+
+#Fitting sinusoid functions based on these frequencies
+sinusoid <- function(start, end, freqs){
+  t <- start:end
+  df <- matrix(NA, nrow = length(t), ncol = length(freqs) * 2)
+  for(i in 1:length(freqs)){
+    df[ , 2*i] <- cos(2 * pi * freqs[i] * t)
+    df[ , (2*i-1)] <- sin(2*pi*freqs[i]*t)
+  }
+  return(as.data.frame(df))
+}
+season.fit.df <- sinusoid(start = 1, end = length(param.fit$residuals),
+                          freqs = freqs)
+season.fit.df["y"] <- param.fit$residuals
+season.fit <- lm(y ~., data = season.fit.df)
+
+
+plot(data$log.activity, type = "l", 
+     main = "Fitted Trend Line after Parametric and Seasonal Fit, 3 Freqs")
+lines(param.fit$fitted + season.fit$fitted.values, type = "l", 
+      col = "red")
+```
+
+
+Now, what about the ACF of the residuals? How do they look?
+```{r}
+acf(season.fit$residuals, lag.max = 500,
+    main = "ACF of Seasonally Fitted Residuals, 3 Freqs")
+
+```
+
+It seems like just 3 frequencies wasn't a good enough model, as we still see lots of ACFs beyond the Confidence Interval, and some sort of a periodicity still. We should beware of overfitting, but let's try `r 0.13 * 525` frequencies instead.
+
+```{r}
+coeffs <- sort(periodos[2:end.periodos], decreasing = T)[1:floor(0.13*525)]
+freqs <- as.numeric(names(coeffs))
+
+season.fit.df <- sinusoid(start = 1, end = length(param.fit$residuals), 
+                          freqs = freqs)
+season.fit.df["y"] <- param.fit$residuals
+season.fit <- lm(y ~., data = season.fit.df)
+
+#Fitted Values Plot
+plot(data$log.activity, type = "l",
+     main = "Fitted Trend Line after Parametric and Seasonal Fit, 34 Freqs")
+lines(param.fit$fitted + season.fit$fitted.values, type = "l", 
+      col = "red")
+
+#ACF
+acf(season.fit$residuals, lag.max = 500, 
+    main = "ACF of Seasonally Fitted Residuals, 34 Freqs")
+```
+
+The ACF looks much better, and it seems like it's actually almost white noise. This looks very promising.
+
+
+In conclusion, it looks like the best differencing methods are:
+1. Simple 2nd-order differencing (but perhaps overdifferencing may be present), or
+2. Frequency seasonality fit, with `r 0.1*525` frequencies (again there may be overfitting).
+
+
+
+----
+
+# 4. Mapping Covariance Structure
+
+## a) Simple 2nd-order Differencing
+
+Let's check ACF and PACF to see what kind of model it would be best for:
+```{r}
+par(mfrow = c(2,1))
+
+#ACF and PACF
+acf(diff(trenddiff.logdata), lag.max = 200,
+    main = "ACF of 2nd order Differenced Data")
+pacf(diff(trenddiff.logdata), lag.max = 200,
+     main = "PACF of 2nd order differenced data")
+```
+
+Based on the ACF, there is one large negative ACF at lag-1, pointing to an MA(1) model. We also note that this may have resulted due to overdifferencing. Also, we still see some ACFs 
+
+Based on PACF, it also seems to have an AR(3-4) component as well. SAR(1-2)?
+
+
+## b) Seasonal Frequency Fit Residuals
+
+Let's check ACF and PACF to see what kind of model it would be best fitting:
+```{r}
+par(mfrow = c(2,1))
+
+#ACF and PACF
+acf(season.fit$residuals, lag.max = 500)
+pacf(season.fit$residuals, lag.max = 500)
+```
+
+ACF: maybe AR(1) term.
+PACF: Seems very random.
+
+Now, we test and validate different models.
+
+----
+
+# 5. Model Diagnostics
+
+We divide our diagnostics into three sections: Internal Validity, Local External Validity, and General External Validity. Currently we have two different ways of removing mean structure: 1) one fitted through second-order differencing, and 2) one fitted through seasonality residuals. We fit both our manually-specified model, as well as the automatically chosen model through auto.arima for both datasets. Then, for each dataset, we compare the manual and auto models based on the three diagnostics to determine which one is best for forecasting.
+
+In helping us compare different models, we create functions to tell us which, given the seasonal ARIMA component P,D,Q, and the ARIMA differencing component d, tests different combinations of p and q in the normal ARIMA component. We chose AIC and BIC as the test to conduct mainly because these criterions tell us how well we fit signal, and ignore noise, which is very important for forecasting as well.
+
+Note that in this function, we should subtract -1 on both row and column to get the actual p and q we used to fit an ARIMA model. So [1,2] element would be the model's AIC where p = 0 and q = 1. Note that rows indicate the p (AR component), and columns indicate the q (MA component). Furthermore, we test two methods - CSS-ML and ML to get AIC/BICs. If both don't work due to optimization problems in R implementation, we ignore that model.
+```{r}
+icTest = function(ts, p, d, q, P=0, D = 0, Q=0){
+  aicmatrix = matrix(NA, (p+1), (q+1))
+  bicmatrix = matrix(NA, (p+1), (q+1))
+  for(a in 0:p){
+    for(b in 0:q){
+        model <- tryCatch(arima(ts, order = c(a,d,b),
+                              seasonal = list(order = c(P,D,Q), period = 52)),
+                        simpleError = function(e) e)
+        if(inherits(model, "simpleError")){
+          model <- tryCatch(arima(ts, order = c(a,d,b),
+                                  seasonal = list(order = c(P,D,Q), period = 52),
+                                  method = "ML"),
+                            simpleError = function(e) e)
+        }
+        if(inherits(model, "simpleError")){
+          next
+        }
+        aicmatrix[a+1, b+1] = model$aic
+        bicmatrix[a+1, b+1] = BIC(model)
+    }
+      
+  }
+  return(list(aic = aicmatrix, bic = bicmatrix))
+}
+
+
+```
+
+
+
+## 5a) 2nd-order Differencing Data
+
+
+### 5a.1) Local External Validity
+
+First, calculating AIC and BIC matrix for the 2nd-order differencing data:
+```{r}
+#Note: We comment this out because it takes too long - instead I load in a saved RData file to quicken the evaluation process.
+#ic.matrix <- icTest(data$log.activity,
+#                    p = 3, d = 2, q = 3, P = 1, D = 0, Q = 1)
+
+load("q1/SAR101ICMat.RData")
+
+#AIC Matrix
+ic.matrix[[1]]
+
+#BIC Matrix
+ic.matrix[[2]]
+
+
+
+```
+
+From the AIC matrix, we see that (given the constant ARIMA(1,0,1)[52] seasonal part we fix, and the order of difference d = 2), the best ARIMA models are (in best order):
+
+* ARIMA(0,2,3)
+* ARIMA(3,2,1)
+* ARIMA(0,2,2)
+
+From the BIC matrix, we see that the best ARIMA models are (in best order):
+
+* ARIMA(0,2,3)
+* ARIMA(3,2,1)
+* ARIMA(0,2,2)
+
+Both Criterion give us the same models, in the same order.
+
+How do their ACFs look?
+```{r}
+#ARIMA(0,2,3)
+sarima1 <- arima(data$log.activity, order = c(0,2,3),
+                  seasonal = list(order = c(1,0,1), period = 52))
+acf(sarima1$residuals, lag.max = 500,
+    main = "ACF of Residuals of ARIMA(0,2,3) X ARIMA(1,0,1)[52]")
+
+#ARIMA(3,2,1)
+sarima2 <- arima(data$log.activity, order = c(3,2,1),
+                  seasonal = list(order = c(1,0,1), period = 52))
+acf(sarima2$residuals, lag.max = 500,
+    main = "ACF of Residuals of ARIMA(3,2,1) X ARIMA(1,0,1)[52]")
+
+#ARIMA(0,2,2)
+sarima3 <- arima(data$log.activity, order = c(0,2,2),
+                  seasonal = list(order = c(1,0,1), period = 52))
+acf(sarima3$residuals, lag.max = 500,
+    main = "ACF of Residuals of ARIMA(0,2,2) X ARIMA(1,0,1)[52]")
+
+# sarima4 <- arima(data$log.activity, order = c(0,1,2),
+#                   seasonal = list(order = c(2,1,1), period = 52))
+# acf(sarima4$residuals, lag.max = 500)
+```
+
+Looks like ARIMA(3,2,1) X ARIMA(1,0,1)[52] model has the best ACF, by eyeballing. However, we can conduct a Ljung-Box-Pierce test to see whether the residuals are white noise or not.
+
+
+### 5a.2) Local Internal Validity
+We calculate Internal Validity by utilizing the Ljung-Box-Pierce Test, to test whether the modeled residuals, based on this test, is significant enough to reject the null hypothesis that the sample ACFs are uncorrelated at lag h = 104 (see source: http://robjhyndman.com/hyndsight/ljung-box-test/). We want the opposite of not rejecting the null hypothesis since that implies the residuals from the fitted SARIMA model is independent of each other.
+
+
+```{r}
+all.models <- list("sarima1" = sarima1, "sarima2" = sarima2, 
+                   "sarima3" = sarima3)
+all.iv <- 
+  lapply(all.models, function(model){
+    return(Box.test(model$residuals, lag = 104, fitdf = length(model$coef)))
+    })
+
+all.iv
+```
+
+Now there is an issue here. The Ljung-Box-Pierce test is saying that all three of our models' residuals are significant enough to reject the null hypothesis that the data is white noise, independent of each other, testing bsaed on lag-104 values. Thus, this means that our modeling did not reduce the time series data to white noise. We may have to go back and change this, but let us move on with the seasonal residuals data instead first, for now.
+
+
+-----
+
+## 5b) Seasonal Residuals.
+
+Now, for the seasonal residuals. Note we do the covariance/time-series modeling on the residuals themselves.
+
+Furthermore, before we conduct any more tests, we note that we will not be using a SARIMA model here, but rather a normal ARIMA model. Thus we need to check for stationarity to make sure ARIMA models can be applied.
+
+Thus, we conduct an ADF test, for which the null hypothesis is that x has unit root and thus the series is not stationary. Our desirable goal is that the data is stationary (i.e. reject the null hypothesis) such that we can properly conduct time series analysis modeling. We use a lag of 104 because the non-stationarity should come from the seasonality we couldn't remove.
+
+```{r}
+adf.test(season.fit$residuals, alternative = "stationary", k = 52)
+
+```
+
+Thus, we can safely conclude that we can continue to model our time series via ARIMA models.
+
+
+### 5b.1) Local External Validity
+
+We first get the AIC/BIC matrix for the seasonal residuals:
+```{r}
+ic.matrix <- icTest(season.fit$residuals,
+                    p = 3, d = 0, q = 3, P = 0, D = 0, Q = 0)
+#AIC Matrix
+ic.matrix[[1]]
+
+#BIC Matrix
+ic.matrix[[2]]
+```
+
+From the AIC matrix, we see that the best ARIMA models are (in best order):
+
+* ARIMA(1,0,2)
+* ARIMA(2,0,2)
+* ARIMA(0,0,1)
+
+Note that for the last ARIMA model, we chose that model because it is a very simple model of AR(1), despite not having the lowest AIC.
+
+From the BIC matrix, we see that the best ARIMA models are (in best order):
+
+* ARIMA(1,0,2)
+* ARIMA(2,0,2)
+* ARIMA(0,0,1)
+
+Both Criterion give us the same models, in the same order.
+
+
+How do their ACFs look?
+
+
+```{r}
+#ARIMA(1,0,2)
+arima1 <- arima(season.fit$residuals, order = c(1,0,2))
+acf(arima1$residuals, lag.max = 500,
+    main = "ACF of Residuals of ARIMA(1,0,2)")
+
+#ARIMA(2,0,2)
+arima2 <- arima(season.fit$residuals, order = c(2,0,2))
+acf(arima2$residuals, lag.max = 500,
+    main = "ACF of Residuals of ARIMA(2,0,2)")
+
+#ARIMA(0,0,1)
+arima3 <- arima(season.fit$residuals, order = c(0,0,1))
+acf(arima3$residuals, lag.max = 500,
+    main = "ACF of Residuals of ARIMA(0,0,1)")
+```
+
+They look very white-noise like, but we need to check via the Ljung-Box-Pierce Test.
+
+
+
+### 5b.2) Local Internal Validity
+
+
+Ljung-Box-Pierce test for seasonal residuals.
+
+```{r}
+all.models <- list("arima1" = arima1, "arima2" = arima2, 
+                   "arima3" = arima3)
+all.iv <- 
+  lapply(all.models, function(model){
+    return(Box.test(model$residuals, lag = 104, fitdf = length(model$coef)))
+    })
+
+all.iv
+```
+
+It seems that all three models pass the Ljung-Box-Pierce test to check for independence of time series values at lag-104. We note that very high p-values may indicate overfitting of the data, but that does not seem to be the case for us.
+
+
+
+## 5b.3) General External Validity
+This diagnostic/heuristic is probably the most important, mainly because we wish to forecast 2 years (104 observations) worth of data, and we wish to use a good model in doing so. We use a time-series cross validation method to see which model is better.
+
+
+```{r}
+tsCV <- function(ts, order, sorder = c(0,0,0), type, k){
+  all_mses <- c()
+  for(i in (10-k-1):8){
+    train <- ts[1:(i*52), ]
+    test <-  ts[(i*52+1):((i+2)*52), ]
+    if(type == "resids"){
+      param.fit <- loess(log.activity ~ Xt, data = train,
+                         control = loess.control(surface = "direct"),
+                         span = 0.75, degree = 1)
+      
+      periodos <- 
+        abs(fft(param.fit$residuals)/sqrt(length(param.fit$residuals)))^2
+      names(periodos) <- (1:length(periodos) - 1) / length(param.fit$residuals)
+      end.periodos <- ceiling(nrow(train) / 2)
+      num.periods <- floor(0.13*nrow(train))
+      coeffs <- sort(periodos[2:end.periodos], decreasing = T)[1:num.periods]
+      freqs <- as.numeric(names(coeffs))
+      season.fit.df <- sinusoid(start = 1, end = i*52,  freqs = freqs)
+      season.fit.df["y"] <- param.fit$residuals
+      season.fit <- lm(y ~., data = season.fit.df)
+      
+      sresids.model <- arima(season.fit$residuals, order = order,
+                             seasonal = list(order = sorder, period  = 52))
+      
+      sresids.fcast <- predict(sresids.model, n.ahead = 104)
+      s.fitted <- predict(season.fit, 
+                          newdata = sinusoid(start = (i*52+1), end = (i+2)*52,
+                                             freqs = freqs))
+      p.fitted <- predict(param.fit,
+                          newdata = data.frame(Xt = test$Xt))
+      predicted.val <- p.fitted + s.fitted + sresids.fcast$pred
+    }
+    if(type == "diff"){
+      arima.model <- arima(train$log.activity, order = order,
+                           seasonal = list(order = sorder, period = 52),
+                           method = "CSS-ML")
+      arima.fcast <- predict(arima.model, n.ahead = 104)
+      predicted.val <- arima.fcast$pred
+    }
+    mses <- (test$activity - (exp(predicted.val) - 2))^2
+    all_mses <- c(all_mses, mean(mses))
+  }
+  return(all_mses)
+}
+```
+
+Calculating Cross-Validation CVs for all models
+```{r}
+#ARIMA(1,0,2)
+arima1.mses <- tsCV(data, order = c(1,0,2), sorder = c(0,0,1), 
+                    k = 4, type = "resids")
+mean(arima1.mses)
+
+#ARIMA(2,0,2)
+arima2.mses <- tsCV(data, order = c(2,0,2), sorder = c(0,0,0), 
+                    k = 4, type = "resids")
+mean(arima2.mses)
+
+#ARIMA(0,0,1)
+arima3.mses <- tsCV(data, order = c(0,0,1), sorder = c(0,0,0),
+                    k = 4, type = "resids")
+mean(arima3.mses)
+```
+
+All three MSEs are very comparable.
+
+
+
+----
+
+### 6. Forecasting.
+
+Predicting function and plotting function taken from Lecture notes:
+```{r}
+dat_pred <- function(fit, m=20){
+# Construct predictions
+fcast <- predict(fit, n.ahead=m)
+
+# Construct intervals
+U <- fcast$pred + 2*fcast$se
+L <- fcast$pred - 2*fcast$se
+
+# List with enough info to construct plots 
+list(pred=fcast$pred,
+upper=U,
+lower=L,
+m=m)
+}
+plot_pred <- function(dat, pred_out, ...){
+pal <- c("green", "orange")
+# Construct combined timeseries
+newx <- 1:(length(dat) + pred_out$m)
+newy <- c(dat, pred_out$pred)
+datx <- 1:length(dat); predx <- length(dat) + 1:pred_out$m
+
+# Plot raw timeseries to get figure sizing, labeling
+plot(newx, newy, type='l', xlab="Time", ylab="Data", main="Predictions", ...)
+# Plot data and predictions
+lines(datx, dat, col=pal[1], type='o', lwd=2)
+lines(predx, pred_out$pred, col=pal[2], type='o', lwd=2)
+# Plot intervals
+lines(predx, pred_out$upper, col=pal[2])
+lines(predx, pred_out$lower, col=pal[2])
+}
+```
+
+Graphing Predictions:
+```{r}
+preds.obj <- dat_pred(manual.fit, m = 104)
+par(mfrow = c(1,1))
+plot_pred(data$activity, preds.obj )
+```
+
+Finally, outputting prediction results:
+```{r}
+preds <- preds.obj$pred
+write(preds, file = "q1/Q1_Jong_Lee_25344865.txt", sep = ",",
+ncol = 1) 
+```
+
+
+

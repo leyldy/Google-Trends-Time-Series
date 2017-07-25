@@ -1,0 +1,15 @@
+setwd("~/Desktop/School/STAT153/midterm2")
+
+q1 <- read.csv("predictions/Q1_Jong_Lee_25344865.txt", header = F)
+q1_og <- read.csv("q1/q1_train.csv")
+q2 <- read.csv("predictions/Q2_Jong_Lee_25344865.txt", header = F)
+q2_og <- read.csv("q2_train.csv")
+q3 <- read.csv("predictions/Q3_Jong_Lee_25344865.txt", header = F)
+q3_og <- read.csv("q3/q3_train.csv")
+q4 <- read.csv("predictions/Q4_Jong_Lee_25344865.txt", header = F)
+q4_og <- read.csv("q4_train.csv")
+q5 <- read.csv("predictions/Q4_Jong_Lee_25344865.txt", header = F)
+q5_og <- read.csv("q5/q5_train.csv")
+
+plot(q4_og$activity, xlim = c(0,629), type = "l", ylim = c(-1,3))
+lines(526:629, q4$V1, col = "red")

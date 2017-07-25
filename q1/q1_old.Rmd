@@ -1,0 +1,238 @@
+---
+title: "q1_old"
+author: "Jong Ha Lee"
+date: "4/14/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+############### PERIODICITIY PARAMETRIC ESTIMATION ##################
+
+Let us use FFT to estimate the periodic trend present. 
+```{r}
+fft(data$activity)[1:ceiling(length(data$activity) / 2)]
+```
+
+How about using a combination of sinusoid functions and fitting it??
+```{r}
+sinusoid <- function(k){
+  t <- data$Xt
+  d <- 52
+  df <- matrix(NA, length(t), 2*k)
+  for(f in 1:k){
+    df[, 2 * f - 1] <- cos(2*pi*f*t/d)
+    df[, 2 * f] <- sin(2*pi*f*t/d)
+  }
+  return(as.data.frame(df))
+}
+
+seasonfit <- lm(data$log.activity ~ ., data = sinusoid(15))
+plot(seasonfit$residuals, type = "l")
+```
+
+There is some spikes, but the variability has somewhat stabilized, and now we can just remove the trend and some seasonality.
+```{r}
+diff.seasonfit <- diff(seasonfit$residuals, lag = 52, differences = 1)
+acf(diff.seasonfit, lag.max = 500)
+```
+
+Thus, lag-1 first differencing again:
+```{r}
+obj <- ts(diff(diff.seasonfit))
+acf(diff(diff.seasonfit), lag.max = 500)
+```
+
+############### PERIODICITIY PARAMETRIC ESTIMATION ##################
+
+
+
+
+
+
+################# OLD STUFF #########################
+
+
+
+Let's difference the data to remove the seasonality.
+```{r}
+diff_data <- diff(data$activity, lag = 52, differences = 1)
+acf(diff_data, lag.max = 500)
+```
+
+We see that the seasonality has been somewhat removed, but it still is present. Furthermore, we see that many of the ACFs are still positively correlated, which indicates we may need another order of differencing.
+
+Thus, lag-1 first differencing again:
+```{r}
+obj <- ts(diff(diff_data))
+acf(diff(diff_data), lag.max = 500)
+```
+
+We can still see that there are spikes in the correlation for lags multiple of 50-52. However, for lags which are not multiple of 50-52, they are within the 95% Confidence Interval. Hence, we see a seasonal correlation structure in this differenced data, which points to a Seasonal ARMA model to map the correlation structure. 
+
+----
+
+# 4. Mapping Covariance Structure
+
+Let's check ACF and PACF to see what kind of model it would be best fitting:
+```{r}
+par(mfrow = c(2,1))
+
+#ACF and PACF
+acf(diff(diff_data), lag.max = 500)
+pacf(diff(diff_data), lag.max = 500)
+```
+
+We note that the first-differenced acf of `diff_data =`(lag-52 differenced original data) is close to 0 after 1-3 lags, suggesting an MA(1-3) model. We also note that there is a seasonal correlation at lag which are multiples of 50-52. Thus, we also need to incorporate the seasonal ARIMA part as a multiplicative measure.
+
+As for the Seasonal ARIMA aspect, we see that at each seasonal lag (multiples of 50-52), the ACF follows roughly a MA(1-2) as well due to the sharp cutoff after 1-2 lags after the seasonal lag. The PACF also seems to show a AR(1-2) model to be present as well. These are some considerations to keep when trying out different models.
+
+Note that the ACF and PACFs we looked at were first, lag-1 differenced data of the first, lag-52 original data. Thus when fitting the SARIMA model, we need to acknowledge that we're fitting on the actual activity time series data, not the `diff_data` we were always looking at.
+
+Now, we test and validate different models.
+
+----
+
+# 5. Model Diagnostics
+
+We divide our diagnostics into three sections: Internal Validity, Local External Validity, and General External Validity. Currently we have two models: one manually tested based on our previous reasoning behind covariance structure, and one automatically calculated by the `auto.arima` function in `forecast` packages. We compare these two models to determine which one is best for forecasting.
+
+```{r}
+ts.data <- ts(data$activity,start=1,frequency=52) 
+auto.fit <- auto.arima(ts.data, D = 1)
+
+#Manual fit: ARMA(0,1,2) X ARMA(2,1,1)[52]
+manual.fit2 <- arima(data$activity, order=c(0,1,2), 
+seasonal=list(order=c(4,1,5), period=52),
+method = "CSS")
+acf(manual.fit$residuals, lag.max = 500,ylim = c(-0.2, 0.3))
+```
+
+## 5a) Internal Validity
+We first calculate Internal Validity by utilizing the Ljung-Box-Pierce Test, to test whether the modeled residuals, based on this test, is enough to not reject the null hypothesis that the sample ACFs are uncorrelated at lag h = 52 (what we want).
+
+```{r}
+aicTest = function(ts, p, q, P, Q){
+aic = matrix(NA, (p+1), (q+1))
+for(a in 0:p){
+for(b in 0:q){
+aic[a+1, b+1] = arima(ts, order = c(a,1,b),seasonal = list(order = c(P,0,Q), period = 52))$aic
+}
+}
+return(aic)
+}
+
+
+bicTest = function(ts, p, q, P, Q){
+bic = matrix(NA, (p+1), (q+1))
+for(a in 0:p){
+for(b in 0:q){
+bic[a+1, b+1] = BIC(arima(ts, order = c(a,1,b), seasonal = list(order = c(P,0,Q), period = 52)))
+}
+}
+return(bic)
+}
+```
+
+
+```{r}
+auto.iv <- Box.test(auto.fit$residuals, lag = 52, fitdf = length(auto.fit$coef))
+
+#Auto-fitted Box-Pierce Test:
+auto.iv
+
+manual.iv <- Box.test(manual.fit$residuals, lag = 52, 
+fitdf = length(manual.fit$coef))
+
+#Manually-fitted Box-Pierce Test:
+manual.iv
+```
+
+It seems that the p-value is higher, meaning there is a much higher probability that a random sample ACF is more extreme than the one calculated from the residuals. Thus, a higher p-value means a better Internal Validity based on this test, and as a result the manual.fit wins on Internal Validity, or the model being internally consistent in re-predicting the data we used to fit the model.
+
+
+## 5b) Local External Validity
+We simply compare the AICs of the models to determine which one has the better Local External Validity. The Local External Validity is quite important in that it tells us which model better fits signal, but also ignores noise (overfitting) so that in future same replications, we can still well model the data's signal.
+
+```{r}
+#Auto-fitted AIC
+auto.fit
+
+#Manually-fitted AIC
+manual.fit
+```
+
+Again, the manual fit showed a better AIC value of `r manual.fit$aic`, also winning against the automatic fit AIC value of `r auto.fit$aic`.
+
+## 5c) General External Validity
+This diagnostic/heuristic is probably the most important, mainly because we wish to forecast 2 years (104 observations) worth of data, and we wish to use a good model in doing so. We use a time-series cross validation method to see which model is better. We use package `fpp`'s built-in time-series cross validation function.
+
+```{r}
+library(fpp)
+
+
+```
+
+----
+
+### 6. Forecasting.
+
+Predicting function and plotting function taken from Lecture notes:
+```{r}
+dat_pred <- function(fit, m=20){
+# Construct predictions
+fcast <- predict(fit, n.ahead=m)
+
+# Construct intervals
+U <- fcast$pred + 2*fcast$se
+L <- fcast$pred - 2*fcast$se
+
+# List with enough info to construct plots 
+list(pred=fcast$pred,
+upper=U,
+lower=L,
+m=m)
+}
+plot_pred <- function(dat, pred_out, ...){
+pal <- c("green", "orange")
+# Construct combined timeseries
+newx <- 1:(length(dat) + pred_out$m)
+newy <- c(dat, pred_out$pred)
+datx <- 1:length(dat); predx <- length(dat) + 1:pred_out$m
+
+# Plot raw timeseries to get figure sizing, labeling
+plot(newx, newy, type='l', xlab="Time", ylab="Data", main="Predictions", ...)
+# Plot data and predictions
+lines(datx, dat, col=pal[1], type='o', lwd=2)
+lines(predx, pred_out$pred, col=pal[2], type='o', lwd=2)
+# Plot intervals
+lines(predx, pred_out$upper, col=pal[2])
+lines(predx, pred_out$lower, col=pal[2])
+}
+```
+
+Graphing Predictions:
+```{r}
+preds.obj <- dat_pred(manual.fit, m = 104)
+par(mfrow = c(1,1))
+plot_pred(data$activity, preds.obj )
+```
+
+Finally, outputting prediction results:
+```{r}
+preds <- preds.obj$pred
+write(preds, file = "q1/Q1_Jong_Lee_25344865.txt", sep = ",",
+ncol = 1) 
+```
+
+```{r}
+ts2 <- data$activity
+train.dt = ts2[1:(52*8)]
+test.dt = ts2[(52*8+1):(52*10)]
+fcast = predict(manual.fit2, n.ahead = 104)
+mse = mean((fcast$pred-test.dt)^2)
+```
+
+
